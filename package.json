@@ -10,5 +10,8 @@
   "scripts": {
     "test": "node validate.mjs",
     "check": "node --check dist/app.js && node --check dist/sw.js && node validate.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.0"
   }
 }

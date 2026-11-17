@@ -17,6 +17,7 @@ let page='home',profileTab='saved',visibleCount=24,mapView='map',mapQuery='',map
 const defaultFilters=()=>({q:'',location:db.location||'North Carolina',category:'',specialty:'',region:'',language:'',insurance:'',coverage:'',radius:'50',virtualOnly:false,includeVirtual:true,withPhoto:false,verified:false,letter:'',sort:'featured'});
 let filters={...defaultFilters(),...db.preferences,location:db.location||'North Carolina'};
 const main=$('#main'),modal=$('#modal');
+const authState={user:null,ready:false,available:false,mode:'signin',message:'',messageType:'status',busy:false};
 const nav=[['home','home','Home'],['care','care','Find care'],['map','map','Resource map'],['community','people','Community'],['profile','user','My care']];
 const cityGroups=new Map();
 for(const p of NC_GEOGRAPHY.places){const key=normalize(p.name);if(!cityGroups.has(key))cityGroups.set(key,[]);cityGroups.get(key).push(p);}
@@ -76,7 +77,93 @@ function wireMap(){const container=$('#real-map');if(!container)return;if(!globa
 function community(){return `${pageTitle('COLLECTIVE CARE. SHARED RESPONSIBILITY.','A community worth connecting.','MedConnect brings provider information together for Black and underserved communities across North Carolina.')}<div class="community-real-grid"><section class="community-feature"><span class="small-orbit">${icon('people')}</span><div class="eyebrow">THE PEOPLE BEHIND THE DIRECTORY</div><h2>Care shouldn’t depend on who you know.</h2><p>Search published provider information, discover practices, and reach out directly. MedConnect uses a dated directory import, with details contributed by providers and public sources.</p><button class="btn primary" data-action="about">About MedConnect ${icon('arrow')}</button></section><section class="white-card"><div class="eyebrow">STAY IN THE LOOP</div><h3>Good connections keep growing.</h3><p>Follow updates from the original directory and its community channels.</p><div class="community-link-list">${link(SOURCE_LINKS.newsletter,'Join the mailing list','community-link','mail')}${link(SOURCE_LINKS.instagram,'Directory updates on Instagram','community-link','external')}${link(SOURCE_LINKS.contact,'Contact the directory team','community-link','chat')}</div></section><section class="white-card"><span class="small-orbit">${icon('care')}</span><h3>Help your community find care.</h3><p>Submit a practice, claim a listing, or explore the options available to providers on the original site.</p><div class="community-link-list">${link(SOURCE_LINKS.providers,'Submit or claim a provider','community-link','arrow')}${link(SOURCE_LINKS.pricing,'Provider plans','community-link','arrow')}</div></section><section class="white-card"><span class="small-orbit">${icon('help')}</span><h3>Support beyond the doctor’s office.</h3><p>NC 211 connects North Carolinians with community resources. Explore food, housing, transportation, and other local support through its resource search.</p>${link('https://nc211.org/','Explore NC 211 resources','btn secondary','external')}<div style="margin-top:17px"><button class="text-btn" data-category="Support & Navigation Services">Browse MedConnect support listings ${icon('arrow')}</button></div></section></div><section class="join-banner"><div><h3>Notice a listing that needs an update?</h3><p>Send corrections to the directory team through its official contact page.</p></div>${link(SOURCE_LINKS.contact,'Contact the directory team','btn','arrow')}</section>${sourceNote()}`;}
 function savedPage(){const rows=db.saved.map(id=>RECORD_BY_ID.get(id)).filter(Boolean);return rows.length?`<div class="provider-grid">${rows.map(providerCard).join('')}</div>`:empty('bookmark','Keep good connections close.','Save a provider or practice to build your own care list. Saved listings stay on this device.','<a href="#care" class="btn primary">Explore providers</a>');}
 function visitCard(v){const p=RECORD_BY_ID.get(v.providerId);return `<article class="activity-card"><span class="status">Personal calendar note</span><h3>${esc(p?.name||v.providerName)}</h3><p>${esc(v.date)} · ${esc(v.time)}${v.mode?` · ${esc(v.mode)}`:''}</p><p>${esc(v.location||p?.address||'')}</p>${v.note?`<p>${esc(v.note)}</p>`:''}<div class="activity-bottom"><span class="tiny muted">This note does not book or confirm an appointment.</span><button class="text-btn" data-action="calendar" data-id="${esc(v.id)}">${icon('calendar')}Download calendar event</button><button class="link-btn" data-action="remove-visit" data-id="${esc(v.id)}">Remove note</button></div></article>`;}
-function profile(){return `${pageTitle('YOUR CONNECTIONS. YOUR NEXT STEPS.','Your care, kept together.','Save listings, keep personal calendar notes, and choose how you search.')}<div class="activity-tabs" aria-label="My care sections">${[['saved',`Saved listings (${db.saved.length})`],['visits','My calendar notes'],['preferences','Preferences']].map(([id,text])=>`<button data-profile-tab="${id}" class="${profileTab===id?'active':''}" aria-pressed="${profileTab===id}">${text}</button>`).join('')}</div>${profileTab==='saved'?savedPage():profileTab==='visits'?`${notice('Add an appointment you have arranged with a provider. MedConnect does not book or confirm these calendar notes.')}<div class="section-title"><h2>Personal visit planner</h2><button class="text-btn" data-action="new-visit">${icon('plus')}Add a calendar note</button></div>${db.visits.length?db.visits.map(visitCard).join(''):empty('calendar','A little planning goes a long way.','After you arrange a visit with a provider, you can keep its details here and download a calendar event.','<button class="btn primary" data-action="new-visit">Add a calendar note</button>')}`:preferencesPage()}<div class="section-title"><button class="text-btn" data-action="install">${icon('download')}Add MedConnect to your phone</button><label class="check-label" style="margin:0"><input type="checkbox" data-setting="large-text" ${db.largeText?'checked':''}>Larger text</label></div><p class="local-data-note">Your saved listings and calendar notes stay in this browser. They are not a medical record and are not sent to providers. </p>`;}
+
+function authFeedback() {
+ const message=authState.message;
+ if(!message)return '';
+ return authState.messageType==='error'
+  ? `<p class="error" role="alert">${esc(message)}</p>`
+  : notice(esc(message));
+}
+function authPanelContent() {
+ if(!authState.available)return `<h2>Account access</h2>${notice('Sign-in is unavailable right now. You can still browse providers and resources.')}`;
+ if(!authState.ready)return '<h2>Account</h2><p role="status">Checking your sign-in status...</p>';
+ if(authState.user)return `<h2>Your account</h2><p><span class="status">Signed in</span> ${esc(authState.user.email||'')}</p>${authFeedback()}<div class="form-footer"><button class="btn secondary" type="button" data-action="auth-signout" ${authState.busy?'disabled':''}>${authState.busy?'Signing out...':'Sign out'}</button></div>`;
+ const signingUp=authState.mode==='signup';
+ const formId=signingUp?'auth-signup-form':'auth-signin-form';
+ return `<h2>${signingUp?'Create an account':'Sign in'}</h2><p>${signingUp?'Use your email to create an account. If email confirmation is enabled, we will send a link.':'Sign in to your Ujima account. Provider browsing remains available without signing in.'}</p>${authFeedback()}<form id="${formId}"><div class="field"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" maxlength="254" required></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="${signingUp?'new-password':'current-password'}" required></div><div class="form-footer"><button class="btn primary" type="submit" ${authState.busy?'disabled':''}>${authState.busy?(signingUp?'Creating account...':'Signing in...'):(signingUp?'Create account':'Sign in')}</button><button class="text-btn" type="button" data-action="${signingUp?'auth-show-signin':'auth-show-signup'}" ${authState.busy?'disabled':''}>${signingUp?'Already have an account? Sign in':'Create an account'}</button></div></form>`;
+}
+function renderAuthPanel() {
+ const panel=$('#auth-panel');
+ if(panel)panel.innerHTML=authPanelContent();
+}
+function authErrorMessage(error,operation) {
+ const message=String(error?.message||'').trim();
+ if(/invalid login credentials/i.test(message))return 'That email and password could not be verified. Check them and try again.';
+ if(/email not confirmed/i.test(message))return 'Please confirm your email using the link we sent, then sign in.';
+ if(/weak password|password.{0,30}(too short|at least)/i.test(message))return 'That password does not meet the password requirements.';
+ if(/rate limit|too many requests/i.test(message))return 'There have been too many attempts. Wait a little and try again.';
+ if(/fetch|network|timeout/i.test(message))return 'We could not reach the sign-in service. Check your connection and try again.';
+ return message||`We could not ${operation}. Please try again.`;
+}
+async function submitAuthForm(mode,formData) {
+ if(authState.busy)return;
+ const client=window.ujimaSupabaseClient;
+ if(!client?.auth){authState.message='Account sign-in is unavailable right now.';authState.messageType='error';renderAuthPanel();return;}
+ authState.busy=true;authState.message='';authState.messageType='status';renderAuthPanel();
+ try {
+  let result;
+  if(mode==='signup') {
+   const redirectTo=window.location.origin+window.location.pathname;
+   result=await client.auth.signUp({email:formData.email,password:formData.password,options:{emailRedirectTo:redirectTo}});
+  } else result=await client.auth.signInWithPassword({email:formData.email,password:formData.password});
+  if(result.error)throw result.error;
+  if(mode==='signup'&&!result.data?.session) {
+   authState.mode='signin';
+   authState.message='If registration succeeds, check your email for a confirmation link before signing in.';
+  } else authState.message=mode==='signup'?'Your account is ready and you are signed in.':'You are signed in.';
+  authState.messageType='status';
+ } catch(error) {
+  authState.message=authErrorMessage(error,mode==='signup'?'create the account':'sign in');
+  authState.messageType='error';
+ } finally {
+  authState.busy=false;
+  renderAuthPanel();
+ }
+}
+async function signOutAuth() {
+ if(authState.busy)return;
+ const client=window.ujimaSupabaseClient;
+ if(!client?.auth){authState.message='Account sign-out is unavailable right now.';authState.messageType='error';renderAuthPanel();return;}
+ authState.busy=true;authState.message='';renderAuthPanel();
+ try {
+  const {error}=await client.auth.signOut();
+  if(error)throw error;
+  authState.user=null;
+  authState.message='You are signed out. Your saved listings and calendar notes remain on this device.';
+  authState.messageType='status';
+ } catch(error) {
+  authState.message=authErrorMessage(error,'sign out');
+  authState.messageType='error';
+ } finally {
+  authState.busy=false;
+  renderAuthPanel();
+ }
+}
+function initializeAuth() {
+ const auth=window.ujimaSupabaseClient?.auth;
+ if(!auth||typeof auth.onAuthStateChange!=='function'){authState.ready=true;renderAuthPanel();return;}
+ authState.available=true;
+ auth.onAuthStateChange((event,session)=>{
+  authState.user=session?.user||null;
+  authState.ready=true;
+  if(event==='SIGNED_IN'){authState.message='';authState.messageType='status';}
+  if(event==='SIGNED_OUT'){authState.message='You are signed out. Your saved listings and calendar notes remain on this device.';authState.messageType='status';}
+  renderAuthPanel();
+ });
+}
+
+function profile(){return `${pageTitle('YOUR CONNECTIONS. YOUR NEXT STEPS.','Your care, kept together.','Save listings, keep personal calendar notes, and choose how you search.')}<section id="auth-panel" class="profile-card">${authPanelContent()}</section><div class="activity-tabs" aria-label="My care sections">${[['saved',`Saved listings (${db.saved.length})`],['visits','My calendar notes'],['preferences','Preferences']].map(([id,text])=>`<button data-profile-tab="${id}" class="${profileTab===id?'active':''}" aria-pressed="${profileTab===id}">${text}</button>`).join('')}</div>${profileTab==='saved'?savedPage():profileTab==='visits'?`${notice('Add an appointment you have arranged with a provider. MedConnect does not book or confirm these calendar notes.')}<div class="section-title"><h2>Personal visit planner</h2><button class="text-btn" data-action="new-visit">${icon('plus')}Add a calendar note</button></div>${db.visits.length?db.visits.map(visitCard).join(''):empty('calendar','A little planning goes a long way.','After you arrange a visit with a provider, you can keep its details here and download a calendar event.','<button class="btn primary" data-action="new-visit">Add a calendar note</button>')}`:preferencesPage()}<div class="section-title"><button class="text-btn" data-action="install">${icon('download')}Add MedConnect to your phone</button><label class="check-label" style="margin:0"><input type="checkbox" data-setting="large-text" ${db.largeText?'checked':''}>Larger text</label></div><p class="local-data-note">Your saved listings and calendar notes stay in this browser. They are not a medical record and are not sent to providers. </p>`;}
 function preferencesPage(){return `<div class="profile-grid"><section class="profile-card"><h2>Make yourself comfortable.</h2><p>Choose your location and optional nickname. These settings stay on this device.</p><form id="preferences-form"><div class="field"><label for="pref-name">Nickname (optional)</label><input id="pref-name" name="name" maxlength="40" value="${esc(db.name)}" autocomplete="off" placeholder="Neighbor"></div><div class="field"><label for="pref-location">North Carolina city or ZIP code</label><input id="pref-location" name="location" list="pref-cities" value="${esc(db.location)}" maxlength="80" required>${cityDatalist('pref-cities')}<small>Use “North Carolina” for the entire directory. City and ZIP distances are approximate straight-line distances.</small></div><label class="check-label"><input name="saveFilters" type="checkbox" checked><span>Remember the current directory filters on this device.</span></label><div class="form-footer"><button class="btn primary" type="submit">Save preferences ${icon('check')}</button></div></form></section><aside class="white-card profile-side"><span class="small-orbit">${icon('shield')}</span><h3>Clear information. Your own choices.</h3><p>Provider contact details come from the source directory. No insurance member numbers or medical details are required to search.</p><button class="text-btn" data-action="about">Directory & privacy information ${icon('arrow')}</button></aside></div>`;}
 function cityDatalist(id){return `<datalist id="${id}"><option value="North Carolina"></option>${CITY_OPTIONS.map(c=>`<option value="${esc(c.name)}"></option>`).join('')}</datalist>`;}
 function render(){if(mapInstance){mapInstance.remove();mapInstance=null;mapLayers=null;}let route=location.hash.slice(1)||'home';if(['saved','requests'].includes(route)){profileTab=route==='saved'?'saved':'visits';route='profile';}if(route==='find')route='care';page=nav.some(n=>n[0]===route)?route:'home';main.innerHTML=({home,care,map:mapPage,community,profile}[page])();updateShell();document.title=`${nav.find(n=>n[0]===page)[2]} · MedConnect`;wireMap();}
@@ -107,7 +194,7 @@ document.addEventListener('click',async e=>{
  const b=e.target.closest('[data-action]');if(!b)return;const id=b.dataset.id;
  switch(b.dataset.action){
  case'close':modal.close();break;case'about':about();break;case'install':installDialog();break;case'native-install':if(installPrompt){const prompt=installPrompt;installPrompt=null;await prompt.prompt();await prompt.userChoice;modal.close();}break;
- case'care':modal.close();navigate('care');break;case'profile':modal.close();navigate('profile');break;
+ case'care':modal.close();navigate('care');break;case'profile':modal.close();navigate('profile');break;case'auth-show-signin':authState.mode='signin';authState.message='';renderAuthPanel();break;case'auth-show-signup':authState.mode='signup';authState.message='';renderAuthPanel();break;case'auth-signout':await signOutAuth();break;
  case'location':openLocation();break;case'statewide':setLocation('North Carolina');modal.close();render();break;
  case'filters':case'all-categories':openFilters();break;case'clear-filter-modal':filters=defaultFilters();openFilters();break;
  case'reset-filters':filters=defaultFilters();visibleCount=24;render();break;case'virtual':filters={...defaultFilters(),virtualOnly:true};navigate('care');break;case'toggle-virtual':filters.virtualOnly=!filters.virtualOnly;visibleCount=24;render();break;
@@ -119,15 +206,16 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('change',e=>{if(e.target.id==='sort-listings'){filters.sort=e.target.value;visibleCount=24;render();}if(e.target.matches('[data-setting="large-text"]')){db.largeText=e.target.checked;persist();}});
 document.addEventListener('submit',e=>{
- const form=e.target,accepted=['care-search','map-search','location-form','filter-form','preferences-form','visit-form'];if(!accepted.includes(form.id))return;e.preventDefault();if(!form.reportValidity())return;const f=Object.fromEntries(new FormData(form));for(const key in f)if(typeof f[key]==='string')f[key]=f[key].trim();
+ const form=e.target,accepted=['care-search','map-search','location-form','filter-form','preferences-form','visit-form','auth-signin-form','auth-signup-form'];if(!accepted.includes(form.id))return;e.preventDefault();if(!form.reportValidity())return;const f=Object.fromEntries(new FormData(form));for(const key in f)if(typeof f[key]==='string'&&key!=='password')f[key]=f[key].trim();
  switch(form.id){
  case'care-search':filters.q=f.q;visibleCount=24;render();break;case'map-search':mapQuery=f.q;mapLimit=18;render();break;
  case'location-form':if(!setLocation(f.location)){$('#location-error').innerHTML='<div class="error">Choose a North Carolina city or ZIP code, or enter North Carolina for the whole state.</div>';return;}modal.close();render();break;
  case'filter-form':filters={...filters,...f,virtualOnly:!!f.virtualOnly,includeVirtual:!!f.includeVirtual,withPhoto:!!f.withPhoto,verified:!!f.verified};visibleCount=24;modal.close();navigate('care');break;
- case'preferences-form':if(!setLocation(f.location)){toast('Please choose a valid North Carolina city or ZIP.');return;}db.name=f.name;db.preferences=f.saveFilters?{...filters,q:'',letter:''}:{};persist();render();toast('Preferences saved on this device.');break;
+ case'auth-signin-form':void submitAuthForm('signin',f);break;case'auth-signup-form':void submitAuthForm('signup',f);break;case'preferences-form':if(!setLocation(f.location)){toast('Please choose a valid North Carolina city or ZIP.');return;}db.name=f.name;db.preferences=f.saveFilters?{...filters,q:'',letter:''}:{};persist();render();toast('Preferences saved on this device.');break;
  case'visit-form':{const p=RECORD_BY_ID.get(f.providerId);if(!p||!f.date||!f.time)return;db.visits.unshift({id:uid(),providerId:p.id,providerName:p.name,date:f.date,time:f.time,mode:f.mode,note:f.note||'',location:f.mode==='Virtual / phone visit'?'Virtual / phone visit':p.address||p.location,created:Date.now()});persist();modal.close();profileTab='visits';navigate('profile');toast('Personal calendar note saved. No appointment was booked.');break;}
  }
 });
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;});window.addEventListener('appinstalled',()=>{installPrompt=null;toast('MedConnect was added to your device.');});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').then(()=>navigator.serviceWorker.ready).then(()=>{offlineReady=true;}).catch(()=>{}));
+initializeAuth();
 render();
